@@ -310,6 +310,31 @@ def build_check_report_text(zip_paths):
         lines.append(f"Mapnaam exact: {result['folder']}")
         lines.append(f"Aantal bestanden: {result['total']} | PDF: {result['pdfs']} | Afbeeldingen: {result['images']} | Overig: {result['others']}")
 
+        if result["all_files"]:
+            for item in result["all_files"][:10]:
+                lines.append(f"  - {item}")
+            if len(result["all_files"]) > 10:
+                lines.append(f"  - ... en nog {len(result['all_files']) - 10} bestand(en)")
+        else:
+            lines.append("  - Geen bestanden gevonden in deze map")
+
+        lines.append("")
+
+    lines.append("EINDRESULTAAT")
+    lines.append("============")
+    lines.append("✓ COMPLEET" if all_ok else "✗ LET OP: dossier mogelijk niet compleet")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_check_table_html(zip_paths):
+    results, all_ok = get_check_results(zip_paths)
+
+    rows = []
+    for result in results:
+        answer = "JA" if result["ok"] else "NEE"
+        cls = "ja" if result["ok"] else "nee"
+
         rows.append(f"""
         <tr>
           <td>{html.escape(result['label'])}</td>
@@ -319,6 +344,7 @@ def build_check_report_text(zip_paths):
           <td>{result['images']}</td>
         </tr>
         """)
+
     eind_cls = "ja" if all_ok else "nee"
     eind_text = "COMPLEET" if all_ok else "LET OP: dossier mogelijk niet compleet"
 
@@ -335,7 +361,6 @@ def build_check_report_text(zip_paths):
     </table>
     <p class="result">Eindresultaat: <span class="{eind_cls}">{html.escape(eind_text)}</span></p>
     """
-
 
 def build_check_report_html(zip_paths):
     table = build_check_table_html(zip_paths)
