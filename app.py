@@ -29,10 +29,11 @@ SOFTR_OUTPUT_FILE_FIELD = os.environ.get("SOFTR_OUTPUT_FILE_FIELD")
 
 OUTPUT_ZIP_NAME = "dossier_gecomprimeerd.zip"
 # Doelmappen in het definitieve dossier. Deze kun je eventueel overrulen in Render.
-BIJLAGE4_TARGET_FOLDER = os.environ.get("BIJLAGE4_TARGET_FOLDER", "Rapportage")
+BIJLAGE4_TARGET_FOLDER = os.environ.get("BIJLAGE4_TARGET_FOLDER", "Beschikbaar gestelde informatie opdrachtgever")
 OPDRACHTBEVESTIGING_TARGET_FOLDER = os.environ.get("OPDRACHTBEVESTIGING_TARGET_FOLDER", "Opdrachtbevestiging")
 BIJLAGE4_TARGET_NAME = os.environ.get("BIJLAGE4_TARGET_NAME", "Bijlage 4.pdf")
 OPDRACHTBEVESTIGING_TARGET_NAME = os.environ.get("OPDRACHTBEVESTIGING_TARGET_NAME", "Opdrachtbevestiging.pdf")
+DOSSIER_ROOT_FOLDER = os.environ.get("DOSSIER_ROOT_FOLDER", "Dossier")
 TEMP_DIR = tempfile.gettempdir()
 BASE_URL = os.environ.get("BASE_URL", "https://photo-api-0iur.onrender.com")
 IMAGE_WORKERS = int(os.environ.get("IMAGE_WORKERS", "2"))
@@ -114,8 +115,8 @@ DOSSIER_CHECKS = [
         "min_files": 1,
     },
     {
-        "label": "Uitvoerbestand Vabi of Uniec",
-        "folder": "Uitvoerbestand Vabi of Uniec",
+        "label": "Uitvoerbestand Uniec3",
+        "folder": "Uitvoerbestand Uniec3",
         "extensions": None,
         "min_files": 1,
     },
@@ -590,6 +591,48 @@ def path_parts(path):
     return [p for p in path.replace("\\", "/").split("/") if p]
 
 
+def zip_entry_output_path(path, strip_root=None):
+    """
+    Zet ieder bestand uit een geüploade ZIP altijd onder één vaste hoofdmap: Dossier.
+    - ZIP met hoofdmap "4/..." wordt "Dossier/..."
+    - ZIP zonder hoofdmap wordt "Dossier/..."
+    """
+    parts = path_parts(path)
+    if not parts:
+        return ""
+    if strip_root and len(parts) > 1 and parts[0] == strip_root:
+        parts = parts[1:]
+    root = safe_filename(DOSSIER_ROOT_FOLDER) or "Dossier"
+    return "/".join([root] + parts)
+
+
+def detect_single_zip_root(infos):
+    """
+    Bepaalt of de ZIP één bovenliggende hoofdmap heeft.
+    Voorbeeld: alle entries starten met "4/" -> strip_root = "4".
+    Bij losse mappen op rootniveau blijft strip_root None.
+    """
+    top_level_parts = set()
+    has_file_at_root = False
+
+    for info in infos:
+        raw_path = info.filename
+        if should_skip_zip_entry(raw_path):
+            continue
+        cleaned = safe_filename(raw_path)
+        parts = path_parts(cleaned)
+        if not parts:
+            continue
+        if len(parts) == 1 and not info.is_dir():
+            has_file_at_root = True
+        else:
+            top_level_parts.add(parts[0])
+
+    if not has_file_at_root and len(top_level_parts) == 1:
+        return next(iter(top_level_parts))
+    return None
+
+
 def is_file_in_exact_folder(path, folder_name):
     # Matcht exact op een mapdeel in het volledige ZIP-pad.
     # Dus Projectdossier format/BAG orientatie/test.pdf werkt.
@@ -739,6 +782,7 @@ def process_zip_bytes(zip_bytes, output_zip, used_names, written_paths, max_widt
     try:
         with ZipFile(zip_bytes, "r") as input_zip:
             infos = input_zip.infolist()
+            strip_root = detect_single_zip_root(infos)
             total_entries = max(1, len(infos))
             image_batch = []
             image_count = 0
@@ -785,7 +829,7 @@ def process_zip_bytes(zip_bytes, output_zip, used_names, written_paths, max_widt
                 raw_path = info.filename
                 if should_skip_zip_entry(raw_path):
                     continue
-                original_path = safe_filename(raw_path)
+                original_path = zip_entry_output_path(safe_filename(raw_path), strip_root=strip_root)
                 if original_path and not info.is_dir() and is_image(original_path):
                     image_count += 1
 
@@ -798,7 +842,7 @@ def process_zip_bytes(zip_bytes, output_zip, used_names, written_paths, max_widt
                 if should_skip_zip_entry(raw_path):
                     continue
 
-                original_path = safe_filename(raw_path)
+                original_path = zip_entry_output_path(safe_filename(raw_path), strip_root=strip_root)
 
                 if not original_path or info.is_dir():
                     continue
@@ -1083,7 +1127,7 @@ def build_zip_from_sources(sources, max_width=1600, quality=75, progress_cb=None
                     target_name = safe_filename(extra.get("target_name") or extra.get("source_name") or f"{label}.pdf")
                     if not extension(target_name):
                         target_name += ".pdf"
-                    target_path = unique_zip_name(f"{target_folder}/{target_name}", used_names)
+                    target_path = unique_zip_name(f"{safe_filename(DOSSIER_ROOT_FOLDER) or 'Dossier'}/{target_folder}/{target_name}", used_names)
                     file_bytes.seek(0)
                     zip_file.writestr(target_path, file_bytes.read())
                     written_paths.append(target_path)
