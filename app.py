@@ -22,9 +22,17 @@ SOFTR_API_KEY = os.environ.get("SOFTR_API_KEY")
 SOFTR_DATABASE_ID = os.environ.get("SOFTR_DATABASE_ID")
 SOFTR_TABLE_ID = os.environ.get("SOFTR_TABLE_ID")
 SOFTR_FILE_FIELD = os.environ.get("SOFTR_FILE_FIELD")
+# Nieuwe velden uit hetzelfde Softr-record. Zet hier de field ID's of veldnamen in Render.
+SOFTR_BIJLAGE4_FILE_FIELD = os.environ.get("SOFTR_BIJLAGE4_FILE_FIELD")
+SOFTR_OPDRACHTBEVESTIGING_FILE_FIELD = os.environ.get("SOFTR_OPDRACHTBEVESTIGING_FILE_FIELD")
 SOFTR_OUTPUT_FILE_FIELD = os.environ.get("SOFTR_OUTPUT_FILE_FIELD")
 
 OUTPUT_ZIP_NAME = "dossier_gecomprimeerd.zip"
+# Doelmappen in het definitieve dossier. Deze kun je eventueel overrulen in Render.
+BIJLAGE4_TARGET_FOLDER = os.environ.get("BIJLAGE4_TARGET_FOLDER", "Rapportage")
+OPDRACHTBEVESTIGING_TARGET_FOLDER = os.environ.get("OPDRACHTBEVESTIGING_TARGET_FOLDER", "Opdrachtbevestiging")
+BIJLAGE4_TARGET_NAME = os.environ.get("BIJLAGE4_TARGET_NAME", "Bijlage 4.pdf")
+OPDRACHTBEVESTIGING_TARGET_NAME = os.environ.get("OPDRACHTBEVESTIGING_TARGET_NAME", "Opdrachtbevestiging.pdf")
 TEMP_DIR = tempfile.gettempdir()
 BASE_URL = os.environ.get("BASE_URL", "https://photo-api-0iur.onrender.com")
 IMAGE_WORKERS = int(os.environ.get("IMAGE_WORKERS", "2"))
@@ -879,7 +887,119 @@ def urls_from_softr_record(record):
     return extract_urls(value)
 
 
-def build_zip_from_sources(sources, max_width=1600, quality=75, progress_cb=None):
+def get_field_value(fields, field_key):
+    if not field_key:
+        return None
+    if field_key in fields:
+        return fields.get(field_key)
+    # Fallback voor kleine verschillen in hoofdletters/spaties bij veldnamen.
+    normalized = str(field_key).strip().lower()
+    for key, value in fields.items():
+        if str(key).strip().lower() == normalized:
+            return value
+    return None
+
+
+def first_url_from_field(fields, field_key):
+    value = get_field_value(fields, field_key)
+    urls = extract_urls(value)
+    return urls[0] if urls else None
+
+
+def get_required_portal_files(record):
+    """
+    Haalt Bijlage 4 en Opdrachtbevestiging uit het Softr-record.
+    Geeft terug: (extra_files, missing_messages).
+    """
+    fields = record.get("fields", {})
+    missing = []
+
+    if not SOFTR_BIJLAGE4_FILE_FIELD:
+        missing.append("Render environment SOFTR_BIJLAGE4_FILE_FIELD ontbreekt")
+        bijlage4 = None
+    else:
+        bijlage4 = first_url_from_field(fields, SOFTR_BIJLAGE4_FILE_FIELD)
+        if not bijlage4:
+            missing.append("Bijlage 4 ontbreekt. Genereer deze eerst vanuit de portal.")
+
+    if not SOFTR_OPDRACHTBEVESTIGING_FILE_FIELD:
+        missing.append("Render environment SOFTR_OPDRACHTBEVESTIGING_FILE_FIELD ontbreekt")
+        opdracht = None
+    else:
+        opdracht = first_url_from_field(fields, SOFTR_OPDRACHTBEVESTIGING_FILE_FIELD)
+        if not opdracht:
+            missing.append("Opdrachtbevestiging ontbreekt. Genereer deze eerst vanuit de portal.")
+
+    extra_files = []
+    if bijlage4:
+        extra_files.append({
+            "label": "Bijlage 4",
+            "url": bijlage4["url"],
+            "source_name": bijlage4.get("name") or "",
+            "target_folder": BIJLAGE4_TARGET_FOLDER,
+            "target_name": BIJLAGE4_TARGET_NAME,
+        })
+    if opdracht:
+        extra_files.append({
+            "label": "Opdrachtbevestiging",
+            "url": opdracht["url"],
+            "source_name": opdracht.get("name") or "",
+            "target_folder": OPDRACHTBEVESTIGING_TARGET_FOLDER,
+            "target_name": OPDRACHTBEVESTIGING_TARGET_NAME,
+        })
+
+    return extra_files, missing
+
+
+def validate_required_inputs(sources, record=None):
+    missing = []
+    zip_sources = [s for s in sources if is_zip(s.get("name", ""))]
+    if not zip_sources:
+        missing.append("Dossier ZIP ontbreekt. Upload eerst het volledige dossier als ZIP-bestand.")
+
+    extra_files = []
+    if record is not None:
+        extra_files, portal_missing = get_required_portal_files(record)
+        missing.extend(portal_missing)
+
+    return zip_sources, extra_files, missing
+
+
+def get_required_sources_from_record(record):
+    """
+    Variant voor Softr Call API: dossier ZIP, Bijlage 4 en opdrachtbevestiging komen alle drie uit recordvelden.
+    """
+    missing = []
+
+    try:
+        dossier_items = urls_from_softr_record(record)
+    except Exception as e:
+        dossier_items = []
+        missing.append(str(e))
+
+    zip_sources = [
+        {"type": "url", "url": item["url"], "name": item.get("name") or get_original_name_from_url(item["url"], "dossier.zip")}
+        for item in dossier_items
+        if is_zip(item.get("name") or get_original_name_from_url(item["url"], "dossier.zip"))
+    ]
+
+    if not zip_sources:
+        missing.append("Dossier ZIP ontbreekt. Upload eerst het volledige dossier in het dossierbestand-veld.")
+
+    extra_files, portal_missing = get_required_portal_files(record)
+    missing.extend(portal_missing)
+
+    return zip_sources, extra_files, missing
+
+
+def format_missing_inputs_message(missing):
+    lines = ["Verwerking gestopt. De volgende verplichte bestanden ontbreken:"]
+    for item in missing:
+        lines.append(f"• {item}")
+    return "\n".join(lines)
+
+
+def build_zip_from_sources(sources, max_width=1600, quality=75, progress_cb=None, extra_files=None):
     zip_buffer = BytesIO()
     used_names = set()
     written_paths = []
@@ -951,6 +1071,26 @@ def build_zip_from_sources(sources, max_width=1600, quality=75, progress_cb=None
                 error_name = f"fout_{index:03d}.txt"
                 zip_file.writestr(error_name, f"Kon bestand {index} niet verwerken: {str(e)}")
                 written_paths.append(error_name)
+
+        if extra_files:
+            if progress_cb:
+                progress_cb("Portalbestanden toevoegen", 82, "Bijlage 4 en opdrachtbevestiging worden toegevoegd...")
+            for extra in extra_files:
+                label = extra.get("label") or "Portalbestand"
+                try:
+                    file_bytes = download_url_to_bytes(extra["url"])
+                    target_folder = safe_filename(extra.get("target_folder") or "Portalbestanden")
+                    target_name = safe_filename(extra.get("target_name") or extra.get("source_name") or f"{label}.pdf")
+                    if not extension(target_name):
+                        target_name += ".pdf"
+                    target_path = unique_zip_name(f"{target_folder}/{target_name}", used_names)
+                    file_bytes.seek(0)
+                    zip_file.writestr(target_path, file_bytes.read())
+                    written_paths.append(target_path)
+                except Exception as e:
+                    error_name = unique_zip_name(f"fout_{safe_filename(label)}.txt", used_names)
+                    zip_file.writestr(error_name, f"Kon {label} niet toevoegen: {str(e)}")
+                    written_paths.append(error_name)
 
         zip_file.writestr("dossier_controle.txt", build_check_report_text(written_paths))
         zip_file.writestr("dossier_controle.html", build_check_report_html(written_paths))
@@ -1024,7 +1164,7 @@ def update_softr_record_with_zip_url(record_id, file_url):
 
 def run_upload_job(job_id, record_id, saved_sources, max_width, quality, job_dir):
     try:
-        set_job_progress(job_id, "Uitpakken", 10, "Bestanden worden voorbereid...")
+        set_job_progress(job_id, "Bestanden controleren", 10, "Dossier ZIP, Bijlage 4 en opdrachtbevestiging worden gecontroleerd...")
 
         sources = []
         for item in saved_sources:
@@ -1034,14 +1174,21 @@ def run_upload_job(job_id, record_id, saved_sources, max_width, quality, job_dir
                 "name": item["name"],
             })
 
+        record = get_softr_record(record_id)
+        zip_sources, extra_files, missing = validate_required_inputs(sources, record=record)
+        if missing:
+            raise RuntimeError(format_missing_inputs_message(missing))
+
         def progress_cb(step, percent, detail=""):
             set_job_progress(job_id, step, percent, detail)
 
+        set_job_progress(job_id, "Uitpakken", 18, "Volledig dossier wordt uitgepakt...")
         zip_buffer, written_paths = build_zip_from_sources(
-            sources,
+            zip_sources,
             max_width=max_width,
             quality=quality,
             progress_cb=progress_cb,
+            extra_files=extra_files,
         )
 
         set_job_progress(job_id, "Dossier checken op volledigheid", 88, "Mappen en bestanden worden gecontroleerd...")
@@ -1132,11 +1279,15 @@ def zip_from_softr(record_id):
 
     try:
         record = get_softr_record(record_id)
-        url_items = urls_from_softr_record(record)
-        if not url_items:
-            return "Geen bestand-URL's gevonden in dit Softr record", 404
-        sources = [{"type": "url", "url": item["url"], "name": item.get("name") or ""} for item in url_items]
-        zip_buffer, _ = build_zip_from_sources(sources, max_width=max_width, quality=quality)
+        zip_sources, extra_files, missing = get_required_sources_from_record(record)
+        if missing:
+            return "<pre>" + html.escape(format_missing_inputs_message(missing)) + "</pre>", 400
+        zip_buffer, _ = build_zip_from_sources(
+            zip_sources,
+            max_width=max_width,
+            quality=quality,
+            extra_files=extra_files,
+        )
         return send_file(zip_buffer, mimetype="application/zip", as_attachment=True, download_name=OUTPUT_ZIP_NAME)
     except Exception as e:
         return f"Fout bij Softr ZIP maken: {str(e)}", 500
@@ -1161,21 +1312,17 @@ def compress_from_softr_direct(record_id):
 
     try:
         record = get_softr_record(record_id)
-        url_items = urls_from_softr_record(record)
+        zip_sources, extra_files, missing = get_required_sources_from_record(record)
 
-        if not url_items:
-            return "Geen bestand-URL's gevonden in dit Softr record", 404
+        if missing:
+            return "<pre>" + html.escape(format_missing_inputs_message(missing)) + "</pre>", 400
 
-        sources = [
-            {
-                "type": "url",
-                "url": item["url"],
-                "name": item.get("name") or ""
-            }
-            for item in url_items
-        ]
-
-        result = build_zip_from_sources(sources, max_width=max_width, quality=quality)
+        result = build_zip_from_sources(
+            zip_sources,
+            max_width=max_width,
+            quality=quality,
+            extra_files=extra_files,
+        )
 
         # Ondersteunt beide varianten van build_zip_from_sources:
         # oudere versies returnen alleen zip_buffer,
@@ -1263,7 +1410,20 @@ def upload_for_record(record_id):
     if not sources:
         return "Geen ondersteunde bestanden ontvangen. Upload afbeeldingen of ZIP-bestanden.", 400
 
-    zip_buffer, written_paths = build_zip_from_sources(sources, max_width=max_width, quality=quality)
+    try:
+        record = get_softr_record(record_id)
+        zip_sources, extra_files, missing = validate_required_inputs(sources, record=record)
+        if missing:
+            return "<pre>" + html.escape(format_missing_inputs_message(missing)) + "</pre>", 400
+    except Exception as e:
+        return f"Fout bij controleren verplichte bestanden: {html.escape(str(e))}", 500
+
+    zip_buffer, written_paths = build_zip_from_sources(
+        zip_sources,
+        max_width=max_width,
+        quality=quality,
+        extra_files=extra_files,
+    )
     download_id = save_temp_zip(zip_buffer)
     file_url = absolute_download_url(download_id)
 
