@@ -25,14 +25,17 @@ SOFTR_FILE_FIELD = os.environ.get("SOFTR_FILE_FIELD")
 # Nieuwe velden uit hetzelfde Softr-record. Zet hier de field ID's of veldnamen in Render.
 SOFTR_BIJLAGE4_FILE_FIELD = os.environ.get("SOFTR_BIJLAGE4_FILE_FIELD")
 SOFTR_OPDRACHTBEVESTIGING_FILE_FIELD = os.environ.get("SOFTR_OPDRACHTBEVESTIGING_FILE_FIELD")
+SOFTR_BAG_AFSCHRIFT_FILE_FIELD = os.environ.get("SOFTR_BAG_AFSCHRIFT_FILE_FIELD")
 SOFTR_OUTPUT_FILE_FIELD = os.environ.get("SOFTR_OUTPUT_FILE_FIELD")
 
 OUTPUT_ZIP_NAME = "dossier_gecomprimeerd.zip"
 # Doelmappen in het definitieve dossier. Deze kun je eventueel overrulen in Render.
 BIJLAGE4_TARGET_FOLDER = os.environ.get("BIJLAGE4_TARGET_FOLDER", "Beschikbaar gestelde informatie opdrachtgever")
 OPDRACHTBEVESTIGING_TARGET_FOLDER = os.environ.get("OPDRACHTBEVESTIGING_TARGET_FOLDER", "Opdrachtbevestiging")
+BAG_AFSCHRIFT_TARGET_FOLDER = os.environ.get("BAG_AFSCHRIFT_TARGET_FOLDER", "BAG orientatie")
 BIJLAGE4_TARGET_NAME = os.environ.get("BIJLAGE4_TARGET_NAME", "Bijlage 4.pdf")
 OPDRACHTBEVESTIGING_TARGET_NAME = os.environ.get("OPDRACHTBEVESTIGING_TARGET_NAME", "Opdrachtbevestiging.pdf")
+BAG_AFSCHRIFT_TARGET_NAME = os.environ.get("BAG_AFSCHRIFT_TARGET_NAME", "BAG afschrift.pdf")
 DOSSIER_ROOT_FOLDER = os.environ.get("DOSSIER_ROOT_FOLDER", "Dossier")
 TEMP_DIR = tempfile.gettempdir()
 BASE_URL = os.environ.get("BASE_URL", "https://photo-api-0iur.onrender.com")
@@ -952,7 +955,7 @@ def first_url_from_field(fields, field_key):
 
 def get_required_portal_files(record):
     """
-    Haalt Bijlage 4 en Opdrachtbevestiging uit het Softr-record.
+    Haalt Bijlage 4, Opdrachtbevestiging en BAG-afschrift uit het Softr-record.
     Geeft terug: (extra_files, missing_messages).
     """
     fields = record.get("fields", {})
@@ -974,6 +977,14 @@ def get_required_portal_files(record):
         if not opdracht:
             missing.append("Opdrachtbevestiging ontbreekt. Genereer deze eerst vanuit de portal.")
 
+    if not SOFTR_BAG_AFSCHRIFT_FILE_FIELD:
+        missing.append("Render environment SOFTR_BAG_AFSCHRIFT_FILE_FIELD ontbreekt")
+        bag_afschrift = None
+    else:
+        bag_afschrift = first_url_from_field(fields, SOFTR_BAG_AFSCHRIFT_FILE_FIELD)
+        if not bag_afschrift:
+            missing.append("BAG-afschrift ontbreekt. Genereer deze eerst vanuit de portal.")
+
     extra_files = []
     if bijlage4:
         extra_files.append({
@@ -990,6 +1001,14 @@ def get_required_portal_files(record):
             "source_name": opdracht.get("name") or "",
             "target_folder": OPDRACHTBEVESTIGING_TARGET_FOLDER,
             "target_name": OPDRACHTBEVESTIGING_TARGET_NAME,
+        })
+    if bag_afschrift:
+        extra_files.append({
+            "label": "BAG-afschrift",
+            "url": bag_afschrift["url"],
+            "source_name": bag_afschrift.get("name") or "",
+            "target_folder": BAG_AFSCHRIFT_TARGET_FOLDER,
+            "target_name": BAG_AFSCHRIFT_TARGET_NAME,
         })
 
     return extra_files, missing
@@ -1011,7 +1030,7 @@ def validate_required_inputs(sources, record=None):
 
 def get_required_sources_from_record(record):
     """
-    Variant voor Softr Call API: dossier ZIP, Bijlage 4 en opdrachtbevestiging komen alle drie uit recordvelden.
+    Variant voor Softr Call API: dossier ZIP, Bijlage 4, opdrachtbevestiging en BAG-afschrift komen uit recordvelden.
     """
     missing = []
 
@@ -1118,7 +1137,7 @@ def build_zip_from_sources(sources, max_width=1600, quality=75, progress_cb=None
 
         if extra_files:
             if progress_cb:
-                progress_cb("Portalbestanden toevoegen", 82, "Bijlage 4 en opdrachtbevestiging worden toegevoegd...")
+                progress_cb("Portalbestanden toevoegen", 82, "Bijlage 4, opdrachtbevestiging en BAG-afschrift worden toegevoegd...")
             for extra in extra_files:
                 label = extra.get("label") or "Portalbestand"
                 try:
@@ -1208,7 +1227,7 @@ def update_softr_record_with_zip_url(record_id, file_url):
 
 def run_upload_job(job_id, record_id, saved_sources, max_width, quality, job_dir):
     try:
-        set_job_progress(job_id, "Bestanden controleren", 10, "Dossier ZIP, Bijlage 4 en opdrachtbevestiging worden gecontroleerd...")
+        set_job_progress(job_id, "Bestanden controleren", 10, "Dossier ZIP, Bijlage 4, opdrachtbevestiging en BAG-afschrift worden gecontroleerd...")
 
         sources = []
         for item in saved_sources:
